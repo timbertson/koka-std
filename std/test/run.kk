@@ -52,12 +52,6 @@ fun testopts/should-include(opts: testopts, test: test-identity)
       patterns.any fn(pattern)
         test.full-name.contains(pattern)
 
-
-// TODO: use core/std/exit after https://github.com/koka-lang/koka/pull/703 is released
-extern exit(i: int): io-noexn ()
-  c inline "exit(kk_integer_clamp32(#1, kk_context()))"
-  js inline "throw(`Exited with code: ${#1}`)"
-
 fun execute-tests(opts: testopts, tests: list<test-case<io>>): <test-report,io> ()
   var summary := suite-summary()
   tests.foreach fn(test)
