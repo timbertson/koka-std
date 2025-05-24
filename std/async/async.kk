@@ -595,6 +595,7 @@ abstract struct scope( : list<int> )
 
 val empty-scope = Scope([])
 
+// add this cancelable id to the scope
 fun parent-scope( cid : int, scope : scope ) : scope
   match scope
     Scope(cids) -> Scope(Cons(cid,cids))

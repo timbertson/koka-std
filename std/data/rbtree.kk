@@ -58,6 +58,11 @@ pub fun values(t: rbtree<k,v>) : list<v>
 pub inline fun empty() : rbtree<k,v>
   Leaf
 
+pub inline fun is-empty(t: rbtree<k,v>) : bool
+  match t
+    Leaf -> True
+    Node(_,_,_,_) -> False
+
 pub inline fip fun set-black( t : rbtree<k,v> ) : rbtree<k,v>
   match t
     Node(_,l,x,v,r) -> Node(Black,l,x,v,r)

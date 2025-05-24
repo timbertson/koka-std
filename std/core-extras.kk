@@ -72,11 +72,11 @@ pub tail fun list/order2(l1: list<a>, l2: list<a>, ?order2: (a, a) -> e order2<a
 
 
 // List Utilities
-pub fun eql/(==)(l1: list<a>, l2: list<a>, ?(==): (a, a) -> e bool): e bool
-  match (l1, l2)
-    (Nil, Nil) -> True
-    (Cons(s1, l1'), Cons(s2, l2')) -> s1 == s2 && eql/(==)(l1'.pretend-decreasing, l2')
-    _ -> False
+// pub fun eql/(==)(l1: list<a>, l2: list<a>, ?(==): (a, a) -> e bool): e bool
+//   match (l1, l2)
+//     (Nil, Nil) -> True
+//     (Cons(s1, l1'), Cons(s2, l2')) -> s1 == s2 && eql/(==)(l1'.pretend-decreasing, l2')
+//     _ -> False
 
 pub fun list/and(l: list<bool>): bool
   match l
@@ -299,9 +299,9 @@ pub extern read-byte-file(path: string): vector<int8>
   c "kk_os_read_byte_file"
 
 // TODO: use core/std/exit after https://github.com/koka-lang/koka/pull/703 is released
-pub extern exit(i: int): io-noexn ()
+pub extern exit(i: int): io-noexn a
   c inline "exit(kk_integer_clamp32(#1, kk_context()))"
-  js inline "throw(`Exited with code: ${#1}`)"
+  js inline "(function(){throw(`Exited with code: ${#1}`)})()"
 
 // Compare unit values. Useful to build composite equality for structures containing a unit (e.g. either<string, ()>)
 pub fun unit/(==)(a: (), b: ()): bool { True }

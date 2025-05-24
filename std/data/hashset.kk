@@ -198,3 +198,9 @@ pub fun foreach( hs : hash-set<v>, f : (v) -> e () ) : e ()
     hs.data.unsafe-idx( i.ssize_t ).foreach fn (entry)
       f(entry)
 
+pub fun show(hs : hash-set<v>, ?show: (v) -> div string): div string
+  var rev := []
+  hs.data.foreach fn(list)
+    list.foreach fn(v)
+      rev := Cons(show(v), rev)
+  "Hash-set(" ++ rev.reverse.join(", ") ++ ")"
