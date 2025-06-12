@@ -143,39 +143,15 @@ fun main(): <io-noexn,async> ()
       println("Interleaved: " ++ pair.show)
       expect((1,2)) { pair }
 
-    effectful-test("interleave with explicit cancelation")
-      // with noleaks
-      with audit
-      val result = try
-        with cancelable
-        val outer-scope = async-scope
-        interleaved {
-          wait(short-pause)
-          outer-scope.cancel()
-        } {
-          with finally
-            println("FINALLY")
-            record("finally")
-          on-cancel { println("CANCEL") } {
-            finally { println("FINALLY") } {
-              wait(long-pause)
-            }
-          }
-          "strand 2 complete"
-        }
-      expect(["finally"]) { records() }
-      expect(Just("strand 1 failed")) { result.error-message }
-
-    // TODO cancel before anything has spawned, prevents anything from spawning
-
-    // effectful-test("interleave with finalization on exn")
+    // effectful-test("interleave with explicit cancelation")
     //   // with noleaks
     //   with audit
     //   val result = try
+    //     with cancelable
+    //     val outer-scope = async-scope
     //     interleaved {
     //       wait(short-pause)
-    //       println("THROWING")
-    //       throw("strand 1 failed")
+    //       outer-scope.cancel()
     //     } {
     //       with finally
     //         println("FINALLY")
@@ -189,6 +165,49 @@ fun main(): <io-noexn,async> ()
     //     }
     //   expect(["finally"]) { records() }
     //   expect(Just("strand 1 failed")) { result.error-message }
+
+    // // // TODO cancel before anything has spawned, prevents anything from spawning
+
+    effectful-test("interleave with finalization after exn")
+      // with noleaks
+      with audit
+      val result = try
+        interleaved {
+          wait(short-pause)
+          throw("strand 1 failed")
+        } {
+          with finally
+            record("finally")
+          on-cancel {
+            record("cancel")
+          } {
+            wait(long-pause)
+          }
+          "strand 2 complete"
+        }
+      expect(["cancel", "finally"]) { records() }
+      expect(Just("strand 1 failed")) { result.error-message }
+
+
+    effectful-test("firstof with finalization in slower branch")
+      // with noleaks
+      with audit
+      val result = firstof {
+        wait(short-pause)
+        1
+      } {
+        with finally
+          record("finally")
+        on-cancel {
+          record("cancel")
+        } {
+          wait(long-pause)
+        }
+        2
+      }
+      expect(["cancel", "finally"]) { records() }
+      expect(1) { result }
+      println("Yah!")
 
     // effectful-test("finalization can be async")
     //   // with noleaks
@@ -216,24 +235,24 @@ fun main(): <io-noexn,async> ()
     //   // TODO THE TEST IS CANCELLED BEFORE HERE!
 
     // effectful-test("cancellation and try")
-    //   // TODO this is the current behaviour, but arguably it's bad to have catch and cancel mixed
-    //   val log = ref([]: list<string>)
+    //   with audit
     //   fun interruptible()
+    //     with finally { record("finally") }
     //     try {
-    //       log.push("start")
+    //       record("start")
     //       wait(long-pause)
     //     } fn(e) {
-    //       log.push("catch")
+    //       record("catch")
     //     }
-    //     log.push("after-catch")
+    //     record("after-catch")
     //     wait(short-pause)
-    //     log.push("still running...")
+    //     record("still running...")
     //     "result"
 
     //   expect(Nothing: maybe<string>, ?(==) = maybe/(==))
     //     timeout(short-pause, interruptible)
 
-    //   expect(["start"], ?(==) = list/(==)) { !log }
+    //   expect(["start", "finally"], ?(==) = list/(==)) { records() }
 
     // effectful-test("error in cancelation is raised")
     //   fun interruptible()

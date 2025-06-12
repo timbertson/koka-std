@@ -550,7 +550,17 @@ fun interleave-strands( xs : list<() -> <async,io-noexn|e> a> ) : <async,io-noex
         no-await( setup, scope) fn(res)
           ch.emit-io({
             unsafe-println("resuming rctx with res " ++ res.show)
-            rcontext.resume(res)
+            if (res.is-cancel) then
+              // if cancelation happens, we explicitly need to cleanup
+              // rather than letting the default handler invoke discontinue()
+              // TODO why is this? discontinue invokes `rcontext.finalize()` itself,
+              // so how is this any different?
+              // NOTE: this breaks `on-cancel` which makes sense, we're skipping intermediate
+              // handlers
+              // rcontext.finalize(())
+              rcontext.resume(res)
+            else
+              rcontext.resume(res)
           })
         ()
 
@@ -562,9 +572,11 @@ fun interleave-strands( xs : list<() -> <async,io-noexn|e> a> ) : <async,io-noex
         async-iox(f)
       fun cancel-scope(scope)
         cancel-scope(scope)
-      fun discontinue()
+
+      final ctl discontinue()
         unsafe-println("[interleave-strands][" ++ i.show ++ "]: discontinue")
-        discontinue()
+        ()
+        // rcontext.finalize(())
 
   xs.foreach-indexed fn(i, action)
     with yield-on-await(i)
@@ -578,9 +590,6 @@ fun interleave-strands( xs : list<() -> <async,io-noexn|e> a> ) : <async,io-noex
     if res.is-finalize then interleave-scope.cancel()
     ()
 
-  with finally {
-    unsafe-println("[interleaved-strands] ****** finally for pump loop, chan state has values = " ++ (!ch.state).is-values.show)
-  }
   // TODO: is this getting discontinued(), preventing the finalizer from active strands running?
   while { strands-are-busy() } // while there are resumptions on the strands..
     // the only way receive can abort is through a cancelation -- but in that case
@@ -833,7 +842,7 @@ pub fun cscope/cancel(s: scope)
 
 // execute an action, but observe whether it completed normally or
 // needs to instead run a finalizer (due to cancellation, exception, etc)
-fun strand-exec( action : () -> e a ): e strand-result<a> {
+fun strand-exec( action : () -> e a ): e strand-result<a>
   match unsafe-try-finalize(action)
     Left(fin) ->
       unsafe-total { println("unsafe-try: finalize(fn)") }
@@ -841,4 +850,3 @@ fun strand-exec( action : () -> e a ): e strand-result<a> {
     Right(v) ->
       unsafe-total { println("unsafe-try: Complete(_)") }
       Complete(v)
-}
