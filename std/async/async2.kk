@@ -71,7 +71,8 @@ pub fun on-cancel(fin: () -> <cancel|e> (), action: () -> <cancel|e> a): <cancel
 // Async effect
 // ----------------------------------------------------------------------------
 // TODO rename strand-result?
-type await-result<a>
+// TOODO hide in an internal submodule?
+pub type await-result<a>
   Cancel
   Result(value: a)
 
@@ -198,7 +199,7 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
       if scope-id == cid then
         async-iox(cancel-triggered)
       else
-        // pass it along, it's presumably a cancelable scope
+        // pass it along, it's presumably a child scope
         // nested under this uncancelable one
         cancel-scope(scope-id)
 
@@ -541,10 +542,12 @@ inline extern inject-effects : forall<a,h,e> (() -> e a) -> total (() -> <strand
 pub effect cancel
   final ctl discontinue(): a
 
-fun catch-cancel(a: () -> <cancel|e> a): e await-result<a>
+// Warning: Cancelation should not be caught unless you're carefully maintaining
+// cancelation semantics yourself.
+pub fun unsafe-catch-cancel(a: () -> <cancel|e> a): e await-result<a>
   handle(a)
     final ctl discontinue()
-      unsafe-println("[catch-cancel] caught, returning Cancel")
+      unsafe-println("[catch-cancel] caught, returning nothing")
       Cancel
     return(x)
       Result(x)
@@ -679,8 +682,8 @@ pub fun setup/await( setup : (cb : (a) -> io-noexn ()) -> io-noexn (maybe<() -> 
 // // Primitive: Execute `setup` to set up an asynchronous callback with the host platform. Invoke `cb` as the callback: it takes either
 // // an exception or a result value, together with boolean parameter whether the callback is done.
 // // The callback `cb` will eventually emit the result into the given channel `ch` after applying the transformation `f` to the result.\
-// // Note: once you exit the `cancelable` scope where `await-to-channel` was called, the callback is invoked with a `Cancel` exception.
-// // The channel should always be awaited within the same `cancelable` scope as the `await-to-channel` invokation.
+// // Note: once you exit the `child-scope` scope where `await-to-channel` was called, the callback is invoked with a `Cancel` exception.
+// // The channel should always be awaited within the same `child-scope` scope as the `await-to-channel` invokation.
 // // TODO: is this equivalent to ch.emit-io { await(...) }? Why is it its own primitive
 // // pub fun await-to-channel( setup : (cb : (error<a>,bool) -> io-noexn ()) -> io-noexn (maybe<() -> io-noexn ()>), ch : channel<b>, f : error<a> -> b  ) : async channel<b>
 // //   no-await(fn(cb)
@@ -703,23 +706,23 @@ fun async-io-noexn( f : () -> io-noexn a ) : <async,ndet> a
 
 
 // // ----------------------------------------------------------------------------
-// // Async handlers: cancelable
+// // Async handlers: child-scope
 // // ----------------------------------------------------------------------------
 
 // inline extern interject-async( action : () -> <async|e> a) : total ( () -> <async,async|e> a)
 //   inline "#1"
 
-// Execute `action` in a cancelable scope. Once `action` is complete
+// Execute `action` in a child-scope scope. Once `action` is complete
 // (successfully or otherwise), all outstanding actions
 // within this scope are canceled.
-pub fun cancelable( action : () -> <async|e> a ) : <async|e> a
+pub fun child-scope( action : () -> <async|e> a ) : <async|e> a
   val cid = async-iox{ unique() }
-  unsafe-println("[cancelable] scope: " ++ cid.show)
+  unsafe-println("[child-scope] scope: " ++ cid.show)
   
   with finally
     // cancel any outstanding operations still in our scope.
     // this might be needed for `no-await` operations.
-    unsafe-println("[cancelable] cancel-self-scope: " ++ cid.show)
+    unsafe-println("[child-scope] cancel-self-scope: " ++ cid.show)
     cancel-scope(cid)
 
   handle ({mask behind<async>(action)})
@@ -729,10 +732,10 @@ pub fun cancelable( action : () -> <async|e> a ) : <async|e> a
     fun cancel-scope(scope)  -> cancel-scope(scope)
     fun async-iox(f)  -> async-iox(f)
     // raw ctl discontinue() ->
-    //   unsafe-println("[cancelable] discontinue")
+    //   unsafe-println("[child-scope] discontinue")
     //   discontinue()
 
-// like cancelable, but the caller is responsible
+// like child-scope, but the caller is responsible
 // for canceling the created scope
 fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> a
   val cid = async-iox{ unique() }
@@ -744,7 +747,7 @@ fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> 
     fun cancel-scope(scope)  -> cancel-scope(scope)
     fun async-iox(f)  -> async-iox(f)
     // raw ctl discontinue() ->
-    //   unsafe-println("[cancelable] discontinue")
+    //   unsafe-println("[child-scope] discontinue")
     //   discontinue()
 
 
@@ -894,7 +897,7 @@ pub fun cscope/cancel(s: scope)
 // execute an action, but observe whether it completed normally or
 // needs to instead run a finalizer (due to cancellation, exception, etc)
 fun strand-exec( action : () -> <cancel|e> a ): e strand-result<await-result<a>>
-  match unsafe-try-finalize({ catch-cancel(action) })
+  match unsafe-try-finalize({ unsafe-catch-cancel(action) })
     Left(fin) ->
       unsafe-total { println("unsafe-try: finalize(fn)") }
       Finalize(fin)

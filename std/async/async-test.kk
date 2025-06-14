@@ -137,29 +137,25 @@ fun main(): <io-noexn,async> ()
       println("Interleaved: " ++ pair.show)
       expect((1,2)) { pair }
 
-    // // TODO what should cancelable return when canceled?
-    // effectful-test("cancel the scope above an interleave")
-    //   // with noleaks
-    //   with audit
-    //   val result = try
-    //     with cancelable
-    //     val outer-scope = async-scope
-    //     interleaved {
-    //       wait(short-pause)
-    //       outer-scope.cancel()
-    //     } {
-    //       with finally
-    //         record("finally")
-    //       on-cancel { println("CANCEL") } {
-    //         wait(long-pause)
-    //       }
-    //       "strand 2 complete"
-    //     }
-    //   expect(["finally"]) { records() }
-    //   expect(((), "nothing?")) { result.untry }
-    //   // expect(Just("strand 1 failed")) { result.error-message }
-
-    // // TODO cancel before anything has spawned, prevents anything from spawning
+    effectful-test("cancel the scope above an interleave")
+      // with noleaks
+      with audit
+      val result = unsafe-catch-cancel
+        with child-scope
+        val outer-scope = async-scope
+        interleaved {
+          wait(short-pause)
+          outer-scope.cancel()
+        } {
+          with finally
+            record("finally")
+          on-cancel { println("CANCEL") } {
+            wait(long-pause)
+          }
+          "strand 2 complete"
+        }
+      expect(["finally"]) { records() }
+      expect(True) { result.is-cancel }
 
     effectful-test("firstof doesn't run more actions if the first is synchronous")
       with audit
@@ -308,13 +304,13 @@ fun main(): <io-noexn,async> ()
           "success"
         } fn(e) { e.message }
 
-    effectful-test("uncancelable defers cancelation signal until block is complete")
+    effectful-test("defer-cancelation defers cancelation signal until block is complete")
       val log = ref([]: list<string>)
       fun interruptible()
         defer-cancelation
           wait(long-pause)
-          log.push("in uncancelable")
-        log.push("after uncancelable")
+          log.push("in critical section")
+        log.push("after critical section")
 
       expect(Nothing) { timeout(short-pause, interruptible) }
-      expect(["in uncancelable"], ?(==) = list/(==)) { !log }
+      expect(["in critical section"], ?(==) = list/(==)) { !log }
