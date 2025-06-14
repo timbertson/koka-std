@@ -159,7 +159,43 @@ fun main(): <io-noexn,async> ()
     //   expect(((), "nothing?")) { result.untry }
     //   // expect(Just("strand 1 failed")) { result.error-message }
 
-    // // // TODO cancel before anything has spawned, prevents anything from spawning
+    // // TODO cancel before anything has spawned, prevents anything from spawning
+
+    effectful-test("firstof doesn't run more actions if the first is synchronous")
+      with audit
+      val result = firstof {
+        1
+      } {
+        wait(short-pause)
+        record("second branch executed")
+        2
+      }
+      expect(result) { 1 }
+      expect([]: list<string>) { records() }
+
+    effectful-test("firstof doesn't spawn further actions if the first raises synchronously")
+      with audit
+      val result = try
+        firstof {
+          throw("branch 1")
+        } {
+          wait(short-pause)
+          record("second branch executed")
+        }
+      expect(Just("branch 1")) { result.error-message }
+      expect([]: list<string>) { records() }
+
+    effectful-test("interleave doesn't spawn further actions if the first raises synchronously")
+      with audit
+      val result = try
+        interleaved([{
+          throw("branch 1")
+        }, {
+          wait(short-pause)
+          record("second branch executed")
+        }])
+      expect(Just("branch 1")) { result.error-message }
+      expect([]: list<string>) { records() }
 
     effectful-test("interleave with finalization after exn")
       // with noleaks
