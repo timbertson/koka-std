@@ -18,10 +18,6 @@ fun listref/push(lr: ref<_, list<a>>, item: a, ?show: (a) -> string)
 val short-pause = 1.milli-seconds
 val long-pause = 100.milli-seconds
 
-fun uncancelable(block)
-  // TODO
-  block()
-
 // rbset doesn't have remove, and hashset doesn't work in JS
 fun listset/add(l: list<v>, v: v, ?(==): (v, v) -> bool): list<v>
   if l.find(fn(i) i == v).is-just then l
@@ -74,9 +70,6 @@ fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
     fun cancel-scope(scope)
       cancel-scope(scope)
 
-    fun discontinue()
-      discontinue()
-
     val async-scope = async-scope
 
   mask behind<async>(action)
@@ -102,6 +95,7 @@ fun error-message(err: error<_>): maybe<string>
     Ok(_) -> Nothing
 
 fun main(): <io-noexn,async> ()
+  with cancel/handle // TODO why isn't this added implicitly?
   run-tests
     effectful-test("simple sleep")
       // with noleaks
@@ -143,7 +137,8 @@ fun main(): <io-noexn,async> ()
       println("Interleaved: " ++ pair.show)
       expect((1,2)) { pair }
 
-    // effectful-test("interleave with explicit cancelation")
+    // // TODO what should cancelable return when canceled?
+    // effectful-test("cancel the scope above an interleave")
     //   // with noleaks
     //   with audit
     //   val result = try
@@ -154,17 +149,15 @@ fun main(): <io-noexn,async> ()
     //       outer-scope.cancel()
     //     } {
     //       with finally
-    //         println("FINALLY")
     //         record("finally")
     //       on-cancel { println("CANCEL") } {
-    //         finally { println("FINALLY") } {
-    //           wait(long-pause)
-    //         }
+    //         wait(long-pause)
     //       }
     //       "strand 2 complete"
     //     }
     //   expect(["finally"]) { records() }
-    //   expect(Just("strand 1 failed")) { result.error-message }
+    //   expect(((), "nothing?")) { result.untry }
+    //   // expect(Just("strand 1 failed")) { result.error-message }
 
     // // // TODO cancel before anything has spawned, prevents anything from spawning
 
@@ -209,93 +202,83 @@ fun main(): <io-noexn,async> ()
       expect(1) { result }
       println("Yah!")
 
-    // effectful-test("finalization can be async")
-    //   // with noleaks
-    //   val log = ref([]: list<string>)
-    //   fun long-running()
-    //     fun cleanup()
-    //       wait(long-pause)
-    //       log.push("cleanup")
+    effectful-test("finalization can be async")
+      // with noleaks
+      val log = ref([]: list<string>)
+      fun long-running()
+        fun cleanup()
+          wait(long-pause)
+          log.push("cleanup")
         
-    //     with finally(cleanup)
-    //     log.push("start")
-    //     wait(long-pause) // <- will be canceled
-    //     log.push("wakeup")
-    //     "long"
+        with finally(cleanup)
+        log.push("start")
+        wait(long-pause) // <- will be canceled
+        log.push("wakeup")
+        "long"
 
-    //   fun short-running()
-    //     wait(short-pause)
-    //     log.push("cancel")
-    //     "short"
+      fun short-running()
+        wait(short-pause)
+        log.push("cancel")
+        "short"
 
-    //   val result = firstof(long-running, short-running)
-    //   log.push("result: " ++ result)
-    //   val e = list/(==)(["a"], ["b"])
-    //   expect(["start", "cancel", "cleanup", "result: short"], ?(==) = list/(==)) { !log }
-    //   // TODO THE TEST IS CANCELLED BEFORE HERE!
+      val result = firstof(long-running, short-running)
+      log.push("result: " ++ result)
+      val e = list/(==)(["a"], ["b"])
+      expect(["start", "cancel", "cleanup", "result: short"], ?(==) = list/(==)) { !log }
 
-    // effectful-test("cancellation and try")
-    //   with audit
-    //   fun interruptible()
-    //     with finally { record("finally") }
-    //     try {
-    //       record("start")
-    //       wait(long-pause)
-    //     } fn(e) {
-    //       record("catch")
-    //     }
-    //     record("after-catch")
-    //     wait(short-pause)
-    //     record("still running...")
-    //     "result"
+    effectful-test("cancellation and try")
+      with audit
+      fun interruptible()
+        with finally { record("finally") }
+        try {
+          record("start")
+          wait(long-pause)
+        } fn(e) {
+          record("catch")
+        }
+        record("after-catch")
+        wait(short-pause)
+        record("still running...")
+        "result"
 
-    //   expect(Nothing: maybe<string>, ?(==) = maybe/(==))
-    //     timeout(short-pause, interruptible)
+      expect(Nothing: maybe<string>, ?(==) = maybe/(==))
+        timeout(short-pause, interruptible)
 
-    //   expect(["start", "finally"], ?(==) = list/(==)) { records() }
+      expect(["start", "finally"], ?(==) = list/(==)) { records() }
 
-    // effectful-test("error in cancelation is raised")
-    //   fun interruptible()
-    //     with finally { throw("finalization exn") }
-    //     wait(long-pause)
-    //     "result"
+    effectful-test("error in cancelation is raised")
+      fun interruptible()
+        with finally { throw("finalization exn") }
+        wait(long-pause)
+        "result"
 
-    //   expect("finalization exn")
-    //     try {
-    //       timeout(short-pause, interruptible)
-    //       "success"
-    //     } fn(e) { e.message }
+      expect("finalization exn")
+        try {
+          timeout(short-pause, interruptible)
+          "success"
+        } fn(e) { e.message }
 
-    // effectful-test("exception in main code takes priority over error in cancelation")
-    //   fun interruptible()
-    //     with finally { throw("finalization exn") }
-    //     wait(long-pause)
-    //     "main exn"
+    effectful-test("exception in main code takes priority over error in cancelation")
+      fun interruptible()
+        with finally { throw("finalization exn") }
+        wait(long-pause)
+        "main exn"
 
-    //   expect("finalization exn")
-    //     try {
-    //       firstof(interruptible)
-    //         wait(short-pause)
-    //         throw("main exn")
-    //       "success"
-    //     } fn(e) { e.message }
+      expect("finalization exn")
+        try {
+          firstof(interruptible)
+            wait(short-pause)
+            throw("main exn")
+          "success"
+        } fn(e) { e.message }
 
-    // effectful-test("uncancelable defers cancelation signal until block is complete")
-    //   val log = ref([]: list<string>)
-    //   fun interruptible()
-    //     uncancelable
-    //       wait(long-pause)
-    //       log.push("in uncancelable")
-    //     log.push("after uncancelable")
+    effectful-test("uncancelable defers cancelation signal until block is complete")
+      val log = ref([]: list<string>)
+      fun interruptible()
+        defer-cancelation
+          wait(long-pause)
+          log.push("in uncancelable")
+        log.push("after uncancelable")
 
-    //   timeout(short-pause, interruptible)
-    //   expect(["in uncancelable"], ?(==) = list/(==)) { !log }
-
-    // /*
-    //  - https://typelevel.org/cats-effect/docs/typeclasses/monadcancel
-    //  - cancellation can be async, and the outer block waits for it
-    //  - cancellation isn't catght by a `try`
-    //  - error in cancellation is reported (???)
-    //  - user level uncancelable / interruptible blocks?
-    //  - finally happens on cancel, too
-    // */
+      expect(Nothing) { timeout(short-pause, interruptible) }
+      expect(["in uncancelable"], ?(==) = list/(==)) { !log }

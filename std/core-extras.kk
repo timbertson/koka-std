@@ -311,3 +311,17 @@ pub fun error/show(a: exn/error<t>, ?show: (t) -> e string): e string
   match (a)
     Ok(a) -> a.show
     Error(e) -> e.exn/show
+
+pub fun maybe/foreach(v: maybe<a>, f: (a) -> e ()): e ()
+  match v
+    Just(x) -> f(x)
+    Nothing -> ()
+
+pub fun list/partition-either(items: list<a>, f: (a) -> <div|e> either<b,c>): <div|e> (list<b>, list<c>)
+  var lefts_r := []
+  var rights_r := []
+  items.foreach fn(item)
+    match f(item)
+      Left(l) -> lefts_r := Cons(l, lefts_r)
+      Right(r) -> rights_r := Cons(r, rights_r)
+  (lefts_r.reverse, rights_r.reverse)
