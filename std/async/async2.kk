@@ -464,7 +464,7 @@ fun interleaving/show(i: interleaving<_>)
 //   i.results.map(fn(pair) pair.snd.async-c
 //   "Interleaving(incomplete=" ++ i.incomplete.show ++ ", " ++ i.results.show ++ ")"
 
-fun unsafe-println(s: string)
+pub fun unsafe-println(s: string)
   unsafe-total { println(s) }
 
 pub fun list/interleaved(xs : list<() -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn|e> list<a>
@@ -569,7 +569,7 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
   with unsafe-override-cancel {
     // Note we can't cancel() directly in this hook because cancel is async,
     // but we can add it to the queue of actions to run
-    unsafe-println("[interleave-strands] caught cancel; emitting explicit cancel-scope into channel")
+    unsafe-println("[interleave-strands] caught cancel; emitting explicit cancel-scope( " ++ (!inner-scope).map(fn(i: int) i).show ++ ") into channel")
     keep-spawning := False
     ch.emit-io
       (!inner-scope).foreach(cancel-scope)
@@ -578,16 +578,21 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
   val sentinel-scope = async-scope
 
   child-scope-without-auto-cancel fn(cid) // introduce a child scope which doesn't cancel-on-finalize
+    unsafe-println("[interleave-strands] created inner-scope " ++ cid.show)
     inner-scope.set(Just(cid))
     // child-scope := Just(interleave-scope)
     val yield-on-await: some<e> (i: int, action: () -> <asyncx,io-noexn|e> ()) -> <asyncx,io-noexn|e> () = fn(i, action)
       handle<async>({ mask behind<async>(action) })
         raw ctl do-await(setup,scope)
           // turn awaits into no-awaits, allowing other strands to execute
-          unsafe-println("[interleave-strands][" ++ i.show ++ "]: deferring resumption to channel")
-          no-await( setup, scope) fn(res)
+          val unique-id = unsafe-total(unique)
+          unsafe-println("[interleave-strands][" ++ i.show ++ "]: deferring resumption in scope " ++ scope.show ++ " to channel -- uid[" ++ unique-id.show ++ "]")
+          
+          // TODO it looks like this doesn't always get called back?
+          no-await(setup, scope) fn(res)
+            unsafe-println("[interleave-strands] enqueuing resume of uid[" ++ unique-id.show ++ "] with res " ++ res.show)
             ch.emit-io({
-              unsafe-println("resuming rctx with res " ++ res.show)
+              unsafe-println("[interleave-strands] resuming rctx uid[" ++ unique-id.show ++ "] with res " ++ res.show)
               rcontext.resume(res)
             })
           ()
@@ -782,15 +787,17 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
     // TODO is there any code path where is-done is False?
     fun cb( res : await-result<_>, is-done : bool ): io-noexn ()
       println("[async/handle] cb for cscope:" ++ cscope.show)
-      if ((!cancel-functions).contains(cscope)) then
-        if is-done then
+      fun cleanup()
+        if is-done && ((!cancel-functions).contains(cscope)) then
           cancel-functions := (!cancel-functions).remove(cscope)
           if res.is-cancel then
             println("[async/handle] Invoking cancel hook for scope " ++ cscope.show ++ " because res is cancel")
             (!cancel-hook)()
-        f(res)
+      cleanup()
+      println("[async/handle] _ACTUALLY_ cb for cscope:" ++ cscope.show)
+      f(res)
 
-    trace("[async/handle] ++cscope:" ++ cscope.show)
+    trace("[async/handle] handle-await unique scope:" ++ cscope.show)
     val trigger-cancel: () -> io-noexn () = fn() cb(Cancel, True)
     cancel-functions := Cons((cscope, trigger-cancel), !cancel-functions)
     match(setup(cb))
@@ -880,7 +887,7 @@ fun contains( xs : list<(scope,a)>, scope : scope ) : bool
 
 pub fun scope/show( s : scope ) : string
   match s
-    Scope(ids) -> ids.map(show).join("<-") ++ "-"
+    Scope(ids) -> " " ++ ids.map(fn(id) "{" ++ id.show ++ "}").join("<") ++ "<"
 
 // TODO make private?
 pub fun scope/cancel(s: scope)

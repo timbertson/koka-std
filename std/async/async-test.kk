@@ -30,34 +30,30 @@ fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   // NOTE: this doesn't handle multiple resumption
   val pending: ref<global,list<(int, async2/scope)>> = ref([])
 
-  fun wrap-setup(setup, scope: async2/scope)
+  fun register(api, scope: async2/scope)
     val id = unique()
     val entry = (id, scope)
-    println("[track-leaks] -> [" ++ entry.show ++ "]")
+    println("[track-leaks " ++ api ++ "] -> [" ++ entry.show ++ "]")
 
     pending := (!pending).add(entry)
-    fun done(result, reason)
+    fun done(result)
       unsafe-total
-        println("[track-leaks] <- [" ++ entry.show ++ ":" ++ reason ++ "] cancel=" ++ result.is-cancel.show)
+        println("[track-leaks " ++ api ++ "] <- [" ++ entry.show ++ "] cancel=" ++ result.is-cancel.show)
       pending := (!pending).remove(entry)
-
-    fun wrapped-setup(cb)
-      fun wrapped-cb(result, bool)
-        done(result, "return")
-        cb(result, bool)
-
-      setup(wrapped-cb)
-      // match setup(wrapped-cb)
-      //   Nothing -> Nothing
-      //   Just(dispose) -> Just { done(Cancel, "cancel"); dispose() }
-    wrapped-setup
+    done
 
   with handler<async>
     ctl do-await(setup,scope)
-      resume(do-await(wrap-setup(setup, scope), scope))
+      val done = register("do-await", scope)
+      val result = do-await(setup, scope)
+      done(result)
+      resume(result)
 
     fun no-await(setup,scope,f)
-      no-await(wrap-setup(setup, scope), scope, f)
+      val done = register("no-await", scope)
+      no-await(setup, scope) fn(result)
+        done(result)
+        f(result)
 
     fun async-iox(f)
       async-iox(f)
@@ -71,7 +67,7 @@ fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   with finally
     if ! (!pending).is-empty then
       println("[track-leaks] pending=" ++ (!pending).map(fst).show)
-      throw("Test leaked async callbacks")
+      throw("Test leaked " ++ (!pending).length.show ++ " async callbacks")
   action()
 
 effect audit<a>
@@ -106,7 +102,7 @@ fun main(): <io-noexn,async> ()
         val result = try
           with noleaks
           no-await(fn (cb) { Nothing }, async-scope, fn(_) {})
-        expect(Just("Test leaked async callbacks")) { result.error-message }
+        expect(Just("Test leaked 1 async callbacks")) { result.error-message }
 
       effectful-test("doesn't interfere with async execution")
         val result = try
@@ -114,7 +110,7 @@ fun main(): <io-noexn,async> ()
           wait(short-pause)
           throw("fail!")
         expect(Just("fail!")) { result.error-message }
-        
+
     noleak-test("simple sleep")
       expect(123)
         wait(short-pause)
