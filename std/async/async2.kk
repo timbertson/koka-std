@@ -61,7 +61,7 @@ pub effect async
 
 // A type alias for asynchronous operations which are both `ndet` and `div` (may never return).
 // This is common for almost all `:async` operations due to concurrency and cancelation.
-pub alias asyncx = <async,ndet,div>
+pub alias asyncx = <async,ndet,div,st<global>>
 
 pub alias async-exn = <asyncx,exn>
 
@@ -131,7 +131,7 @@ alias maybe-dispose-fn = (maybe<() -> io-noexn ()>)
 pub alias await-setup<a> = (cb : (await-result<a>, bool) -> io-noexn ()) -> io-noexn maybe-dispose-fn
 
 // defers cancelation, but invokes a hook immediately for notification
-fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <st<global>,asyncx|e> a): <st<global>,asyncx|e> a
+fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <asyncx|e> a): <asyncx|e> a
   fun cancel-triggered(): io-noexn ()
     unsafe-println("[unsafe-override-cancel]: cancel-triggered")
     on-cancel-hook()
@@ -192,7 +192,7 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
 
 // defer cancelation of the child-scoped `action` until the end of `action`. Note that
 // cancelation cannot be ignored, only deferred.
-pub fun defer-cancelation(action: () -> <st<global>, asyncx|e> a): <st<global>, asyncx|e> a
+pub fun defer-cancelation(action: () -> <asyncx|e> a): <asyncx|e> a
   val canceled: ref<global,_> = ref(False)
   fun on-cancel()
     canceled := True
@@ -323,7 +323,7 @@ fun emit-io( ch : channel<a>, value : a ) : io-noexn ()
       l(value)
 
 // Emit a value asynchronously into a channel.
-pub fun emit( ch : channel<a>, value : a ) : <asyncx,st<global>> ()
+pub fun emit( ch : channel<a>, value : a ) : <asyncx> ()
   async-io-noexn
     emit-io(ch,value)
 
@@ -478,7 +478,7 @@ fun list/interleaved-raw(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx|e> list<
       state := Interleaving(state.incomplete - 1, state.results.insert(idx,res))
       unsafe-println("[interleaved] strand " ++ idx.show ++ " done (" ++ res.show ++ ") state is now " ++ state.show)
 
-  with unsafe-pretend-stateless
+  // with unsafe-pretend-stateless
   with mask<local>
   interleave-strands(xs)
 
@@ -518,9 +518,6 @@ fun unsafe-no-ndet-div( action : () -> <ndet,div|e> a ) : e a
 inline extern inject-effects : forall<a,h,e> (() -> e a) -> total (() -> <strands<a>|e> a)
   inline "#1"
 
-// pub effect cancel
-//   final ctl discontinue(): a
-
 // Warning: Cancelation should not be caught unless you're carefully maintaining
 // cancelation semantics yourself.
 pub fun unsafe-catch-cancel(a: () -> <async|e> a): <async|e> await-result<a>
@@ -548,7 +545,7 @@ fun mask-global-state(a: () -> e a): <st<global>|e> a
   a()
 
 // TODO is there a better way to inform the caller of scope than having every item in the list accept it?
-fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,st<global>,strands<a>|e> ()
+fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,strands<a>|e> ()
   val inner-scope: ref<global,_> = ref(Nothing)
   val keep-spawning: ref<global,_> = ref(True)
   val ch : some<a,e> channel<() -> <async|e> a> = channel()
@@ -603,7 +600,7 @@ fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,st<global>
         strand-done(i, Complete(Cancel))
       else
         with yield-on-await(i)
-        val res = mask-global-state { strand-exec(inject-effects { action(sentinel-scope) }) }
+        val res = strand-exec(inject-effects { action(sentinel-scope) })
         strand-done(i, res)
         if res.is-finalize then
           keep-spawning := False
