@@ -11,7 +11,7 @@ fun list/push(l, item)
   l ++ [item]
 
 fun listref/push(lr: ref<_, list<a>>, item: a, ?show: (a) -> string)
-  println("PUSH: " ++ item.show)
+  // println("PUSH: " ++ item.show)
   lr.modify fn(l)
     l := l.push(item)
 
@@ -26,8 +26,7 @@ fun listset/add(l: list<v>, v: v, ?(==): (v, v) -> bool): list<v>
 fun listset/remove(l: list<v>, v: v, ?(==): (v, v) -> bool): list<v>
   l.list/remove(fn(i) i == v)
 
-fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
-  // NOTE: this doesn't handle multiple resumption
+fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   val pending: ref<global,list<(int, async2/scope)>> = ref([])
 
   fun register(api, scope: async2/scope)
@@ -37,13 +36,13 @@ fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
 
     pending := (!pending).add(entry)
     fun done(result)
-      unsafe-total
-        println("[track-leaks " ++ api ++ "] <- [" ++ entry.show ++ "] cancel=" ++ result.is-cancel.show)
+      // unsafe-total
+      //   println("[track-leaks " ++ api ++ "] <- [" ++ entry.show ++ "] cancel=" ++ result.is-cancel.show)
       pending := (!pending).remove(entry)
     done
 
   with handler<async>
-    ctl do-await(setup,scope)
+    ctl do-await(setup, scope)
       val done = register("do-await", scope)
       val result = do-await(setup, scope)
       done(result)
@@ -66,7 +65,7 @@ fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   with mask behind<async>
   with finally
     if ! (!pending).is-empty then
-      println("[track-leaks] pending=" ++ (!pending).map(fst).show)
+      // println("[track-leaks] pending=" ++ (!pending).map(fst).show)
       throw("Test leaked " ++ (!pending).length.show ++ " async callbacks")
   action()
 
@@ -93,6 +92,16 @@ fun error-message(err: error<_>): maybe<string>
 fun noleak-test(name, body, ?kk-module, ?kk-line)
   // effectful-test("[vanilla] " ++ name, body) // rule out interference by noleaks itself
   effectful-test(name) { noleaks(body) }
+
+
+effect flip
+  ctl flip(): bool
+
+fun both(f: () -> <flip|e> a): e list<a>
+  handle(f)
+    return(x) [x]
+    ctl flip()
+      resume(False) ++ resume(True)
 
 fun main(): <io-noexn,async> ()
   with cancel/handle // TODO why isn't this added implicitly?
@@ -145,7 +154,6 @@ fun main(): <io-noexn,async> ()
           wait(short-pause)
           2
         }
-      println("Interleaved: " ++ pair.show)
       expect((1,2)) { pair }
 
     noleak-test("cancel the scope above an interleave")
@@ -159,9 +167,7 @@ fun main(): <io-noexn,async> ()
         } {
           with finally
             record("finally")
-          on-cancel { println("CANCEL") } {
             wait(long-pause)
-          }
           "strand 2 complete"
         }
       expect(["finally"]) { records() }
@@ -240,7 +246,6 @@ fun main(): <io-noexn,async> ()
       }
       expect(["cancel", "finally"]) { records() }
       expect(1) { result }
-      println("Yah!")
 
     noleak-test("finalization can be async")
       val log = ref([]: list<string>)
@@ -321,3 +326,31 @@ fun main(): <io-noexn,async> ()
 
       expect(Nothing) { timeout(short-pause, interruptible) }
       expect(["in critical section"], ?(==) = list/(==)) { !log }
+
+    noleak-test("a cancelable block within a defered-cancelation block is canceled immediately")
+      with audit
+      fun interruptible()
+        defer-cancelation()
+          fun inner()
+            on-cancel { record("inner canceled") }
+              wait(long-pause)
+            record("inner still running after cancel")
+          timeout(short-pause, inner)
+          record("after-inner")
+        record("after-defer")
+      timeout(short-pause, interruptible)
+      expect(["inner canceled", "after-inner"]) { records() }
+
+    // noleak-test("multiple resumption works within async")
+    //   with audit
+    //   val result = both
+    //     wait(short-pause)
+    //     if flip() then
+    //       wait(short-pause)
+    //       record(True)
+    //       "heads"
+    //     else
+    //       record(False)
+    //       "tails"
+    //   expect([True, False]) { records() }
+    //   expect(["heads", "tails"]) { result }

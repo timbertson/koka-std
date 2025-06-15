@@ -37,8 +37,6 @@ pub import std/num/float64
 import std/time/timestamp
 import std/core-extras
 
-  // js is just using primitives
-
 // A type alias for asynchronous operations that can raise exceptions non-deterministically.
 // This is common for almost all `:async` operations since `cancel` and `timeout` can
 // cancel operations non-deterministically which raises the `Cancel` exception and cancels
@@ -46,20 +44,6 @@ import std/core-extras
 pub alias asyncx = <async,cancel,ndet,div>
 
 pub alias async-exn = <asyncx,exn>
-
-// the effect used to discontinue execution of the current strand
-// (as opposed to the API for triggering cancellation in the current _scope_)
-// TODO better name? Don't want to just call it `cancel`
-// pub effect cancel
-//   final ctl discontinue-execution(): a
-
-// fun cancel/handle(action: () -> <cancel|e> a): e maybe<a>
-//   with handler<cancel>
-//     final ctl discontinue-execution()
-//       return Nothing
-//     return(x)
-//       return Just(x)
-//   action()
 
 pub fun on-cancel(fin: () -> <cancel|e> (), action: () -> <cancel|e> a): <cancel|e> a
   handle<cancel>({ mask behind<cancel>(action) })
@@ -139,15 +123,6 @@ pub effect async
   // trigger cancelation of a specific scope (and all its children)
   ctl cancel-scope( scope : scope-id ) : ()
 
-  // // action take on cancellation for outstanding callbacks.
-  // // Typically this is just cb(Cancelled, True) however
-  // // in an `uncancelable` block it simply sets a flag without invoking `cb`
-  // val cancel-mode: cancel-mode
-
-  // react to the cancelation of this strand's scope
-  // ctl discontinue() : a
-
-
 
 // defers cancelation, but invokes a hook immediately for notification
 fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <st<global>,asyncx|e> a): <st<global>,asyncx|e> a
@@ -211,11 +186,7 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
   action()
 
 // defer cancelation of the child-scoped `action` until the end of `action`. Note that
-// cancelation cannot be ignored, only deferred
-// TODO does nested uncancelable defer until the toplevel block is complete?
-// pub fun defer-cancelation(action: () -> <st<global>, asyncx|e> a): <st<global>, asyncx|e> a
-//   defer-cancelation-hook(noop, action)
-
+// cancelation cannot be ignored, only deferred.
 pub fun defer-cancelation(action: () -> <st<global>, asyncx|e> a): <st<global>, asyncx|e> a
   val canceled: ref<global,_> = ref(False)
   fun on-cancel()
