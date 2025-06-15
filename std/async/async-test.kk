@@ -42,11 +42,11 @@ fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
     done
 
   with handler<async>
-    ctl do-await(setup, scope)
+    fun do-await(setup, scope)
       val done = register("do-await", scope)
       val result = do-await(setup, scope)
       done(result)
-      resume(result)
+      result
 
     fun no-await(setup,scope,f)
       val done = register("no-await", scope)
@@ -61,6 +61,7 @@ fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
       cancel-scope(scope)
 
     val async-scope = async-scope
+    fun discontinue() discontinue()
 
   with mask behind<async>
   with finally
@@ -104,7 +105,6 @@ fun both(f: () -> <flip|e> a): e list<a>
       resume(False) ++ resume(True)
 
 fun main(): <io-noexn,async> ()
-  with cancel/handle // TODO why isn't this added implicitly?
   run-tests
     group("noleaks")
       effectful-test("fails if a block leaks a callback")

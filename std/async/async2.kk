@@ -41,15 +41,22 @@ import std/core-extras
 // This is common for almost all `:async` operations since `cancel` and `timeout` can
 // cancel operations non-deterministically which raises the `Cancel` exception and cancels
 // outstanding asynchronous requests.
-pub alias asyncx = <async,cancel,ndet,div>
+pub alias asyncx = <async,ndet,div>
 
 pub alias async-exn = <asyncx,exn>
 
-pub fun on-cancel(fin: () -> <cancel|e> (), action: () -> <cancel|e> a): <cancel|e> a
-  handle<cancel>({ mask behind<cancel>(action) })
+pub fun on-cancel(fin: () -> <async|e> (), action: () -> <async|e> a): <async|e> a
+  handle<async>({ mask behind<async>(action) })
     final ctl discontinue()
       fin()
       discontinue()
+
+    // passthrough others
+    val async-scope = async-scope
+    fun do-await(setup, scope) do-await(setup,scope)
+    fun no-await(setup, scope, f) no-await(setup,scope, f)
+    fun async-iox(x) async-iox(x)
+    fun cancel-scope(scope) cancel-scope(scope)
 
 // ----------------------------------------------------------------------------
 // Async effect
@@ -107,7 +114,6 @@ pub alias await-setup<a> = (cb : (await-result<a>, bool) -> io-noexn ()) -> io-n
 // TODO: async should NOT imply all of io-noexn. We can
 // do that by moving the scheduler into an effect rather than an implicit
 pub effect async
-  // TODO move to `cancel`?
   val async-scope: scope
 
   // setup a callback and await its completion
@@ -123,6 +129,7 @@ pub effect async
   // trigger cancelation of a specific scope (and all its children)
   ctl cancel-scope( scope : scope-id ) : ()
 
+  final ctl discontinue(): a
 
 // defers cancelation, but invokes a hook immediately for notification
 fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <st<global>,asyncx|e> a): <st<global>,asyncx|e> a
@@ -162,16 +169,14 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
 
   with handler<async>
     val async-scope = new-scope
-    fun do-await(setup,scope)  -> do-await(setup,scope)
-    fun no-await(setup,scope,f)  -> no-await(setup,scope,f)
-    // fun cancel-scope(scope-id) -> cancel-scope(scope-id)
+    fun do-await(setup,scope) do-await(setup,scope)
+    fun no-await(setup,scope,f) no-await(setup,scope,f)
 
     // We notice cancelation from a parent via the canary. We also
     // need to modify the `cancel-scope` hook so that we notice (and defer)
     // cancelation triggered from within this scope, but only if it's
     // targeted at exactly this scope.
-    
-    fun cancel-scope(scope-id) ->
+    fun cancel-scope(scope-id)
       unsafe-println("[defer-cancelation-hook]: saw cancelation of scope " ++ scope-id.show ++ ", mine is " ++ cid.show)
       if scope-id == cid then
         async-iox(cancel-triggered)
@@ -180,7 +185,8 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
         // nested under this uncancelable one
         cancel-scope(scope-id)
 
-    fun async-iox(f) -> async-iox(f)
+    fun async-iox(f) async-iox(f)
+    fun discontinue() discontinue()
 
   with mask behind<async>
   action()
@@ -512,18 +518,25 @@ fun unsafe-no-ndet-div( action : () -> <ndet,div|e> a ) : e a
 inline extern inject-effects : forall<a,h,e> (() -> e a) -> total (() -> <strands<a>|e> a)
   inline "#1"
 
-pub effect cancel
-  final ctl discontinue(): a
+// pub effect cancel
+//   final ctl discontinue(): a
 
 // Warning: Cancelation should not be caught unless you're carefully maintaining
 // cancelation semantics yourself.
-pub fun unsafe-catch-cancel(a: () -> <cancel|e> a): e await-result<a>
-  handle(a)
+pub fun unsafe-catch-cancel(a: () -> <async|e> a): <async|e> await-result<a>
+  handle({ mask behind<async>(a) })
     final ctl discontinue()
       unsafe-println("[catch-cancel] caught, returning nothing")
       Cancel
     return(x)
       Result(x)
+
+    // passthrough others
+    val async-scope = async-scope
+    fun do-await(setup, scope) do-await(setup,scope)
+    fun no-await(setup, scope, f) no-await(setup,scope, f)
+    fun async-iox(x) async-iox(x)
+    fun cancel-scope(scope) cancel-scope(scope)
 
 // TODO is there a better way to inform the caller of scope than having every item in the list accept it?
 fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn,strands<a>|e> ()
@@ -568,14 +581,12 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
             })
           ()
 
-        // redirect all other operations
+        // passthrough others
         val async-scope = async-scope
-        fun no-await(setup,scope,f)
-          no-await(setup,scope,f)
-        fun async-iox(f)
-          async-iox(f)
-        fun cancel-scope(scope)
-          cancel-scope(scope)
+        fun no-await(setup,scope,f) no-await(setup,scope,f)
+        fun async-iox(f) async-iox(f)
+        fun cancel-scope(scope) cancel-scope(scope)
+        fun discontinue() discontinue()
 
     xs.foreach-indexed fn(i, action)
       unsafe-println("[interleave-strands] spawning strand " ++ i.show ++ " in scope " ++ async-scope.show)
@@ -586,8 +597,7 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
         with yield-on-await(i)
 
         // val res = strand-exec(inject-effects(action))
-        val res: strand-result<_> = mask<cancel>
-          strand-exec(inject-effects { action(sentinel-scope) })
+        val res: strand-result<_> = strand-exec(inject-effects { action(sentinel-scope) })
         strand-done(i, res)
         if res.is-finalize then
           keep-spawning := False
@@ -694,24 +704,13 @@ fun async-io-noexn( f : () -> io-noexn a ) : <async,ndet> a
 // (successfully or otherwise), all outstanding actions
 // within this scope are canceled.
 pub fun child-scope( action : () -> <async|e> a ) : <async|e> a
-  val cid = async-iox{ unique() }
-  unsafe-println("[child-scope] scope: " ++ cid.show)
-  
-  with finally
-    // cancel any outstanding operations still in our scope.
-    // this might be needed for `no-await` operations.
-    unsafe-println("[child-scope] cancel-self-scope: " ++ cid.show)
-    cancel-scope(cid)
-
-  handle ({mask behind<async>(action)})
-    val async-scope = async-scope.child(cid)
-    fun do-await(setup,scope)  -> do-await(setup,scope)
-    fun no-await(setup,scope,f)  -> no-await(setup,scope,f)
-    fun cancel-scope(scope)  -> cancel-scope(scope)
-    fun async-iox(f)  -> async-iox(f)
-    // raw ctl discontinue() ->
-    //   unsafe-println("[child-scope] discontinue")
-    //   discontinue()
+  child-scope-without-auto-cancel fn(cid)
+    with finally
+      // cancel any outstanding operations still in our scope.
+      // this might be needed for `no-await` operations.
+      unsafe-println("[child-scope] cancel-self-scope: " ++ cid.show)
+      cancel-scope(cid)
+    action()
 
 // like child-scope, but the caller is responsible
 // for canceling the created scope
@@ -720,13 +719,11 @@ fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> 
   unsafe-println("[child-scope] scope: " ++ cid.show)
   handle ({mask behind<async> { action(cid) }})
     val async-scope = async-scope.child(cid)
-    fun do-await(setup,scope)  -> do-await(setup,scope)
-    fun no-await(setup,scope,f)  -> no-await(setup,scope,f)
-    fun cancel-scope(scope)  -> cancel-scope(scope)
-    fun async-iox(f)  -> async-iox(f)
-    // raw ctl discontinue() ->
-    //   unsafe-println("[child-scope] discontinue")
-    //   discontinue()
+    fun do-await(setup,scope) do-await(setup,scope)
+    fun no-await(setup,scope,f) no-await(setup,scope,f)
+    fun cancel-scope(scope) cancel-scope(scope)
+    fun async-iox(f) async-iox(f)
+    fun discontinue() discontinue()
 
 
 // // ----------------------------------------------------------------------------
@@ -736,8 +733,8 @@ fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> 
 pub fun @default-async(action)
   async/handle(action)
 
-pub fun @default-cancel(action)
-  cancel/handle(action)
+// pub fun @default-cancel(action)
+//   cancel/handle(action)
 
 fun noop(): ()
    ()
@@ -792,9 +789,9 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
       handle-await(setup, scope, f)
     fun cancel-scope(scope)
       handle-cancel(scope)
-    // raw ctl discontinue()
-    //   println("[async/handle] discontinue (finalize)")
-    //   rcontext.finalize(())
+    final ctl discontinue()
+      println("ERROR: discontinue occurred at the toplevel scope, this should be impossible")
+      exit(1)
 
     fun async-iox( f )
       f()
@@ -802,11 +799,11 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
   action()
   ()
 
-pub fun cancel/handle(action : () -> <cancel,io-noexn|e> a ) : <io-noexn|e> a
-  handle(action)
-    final ctl discontinue()
-      println("ERROR: discontinue occurred at the toplevel scope, this should be impossible")
-      exit(1)
+// pub fun cancel/handle(action : () -> <cancel,io-noexn|e> a ) : <io-noexn|e> a
+//   handle(action)
+//     final ctl discontinue()
+//       println("ERROR: discontinue occurred at the toplevel scope, this should be impossible")
+//       exit(1)
 
 // // TODO what is this for?
 // fun io-noexn( f : () -> io-noexn a ) : io-noexn a
@@ -876,7 +873,7 @@ pub fun scope/cancel(s: scope)
 
 // execute an action, but observe whether it completed normally or
 // needs to instead run a finalizer (due to cancellation, exception, etc)
-fun strand-exec( action : () -> <cancel|e> a ): e strand-result<await-result<a>>
+fun strand-exec( action : () -> <async|e> a ): <async|e> strand-result<await-result<a>>
   match unsafe-try-finalize({ unsafe-catch-cancel(action) })
     Left(fin) ->
       unsafe-total { println("unsafe-try: finalize(fn)") }
