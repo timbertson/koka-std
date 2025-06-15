@@ -37,10 +37,30 @@ pub import std/num/float64
 import std/time/timestamp
 import std/core-extras
 
-// A type alias for asynchronous operations that can raise exceptions non-deterministically.
-// This is common for almost all `:async` operations since `cancel` and `timeout` can
-// cancel operations non-deterministically which raises the `Cancel` exception and cancels
-// outstanding asynchronous requests.
+// Asynchronous operations have the `:async` effect.
+// Note: technically, async can smuggle all of `io-noexn`.
+// Functions using the effect directly should expose types
+// limited to the actual effect used.
+pub effect async
+  val async-scope: scope
+
+  // setup a callback and await its completion
+  ctl do-await( setup : await-setup<a>, scope : scope) : await-result<a>
+  
+  // setup a callback to execute `f` on completion, returning control to the caller immediately
+  // after the setup is performed
+  ctl no-await( setup : await-setup<a>, scope : scope, f : await-result<a> -> io-noexn ()  ) : ()
+
+  // TODO: rename `async-eval` or similar?
+  ctl async-iox( action : () -> io-noexn a ) : a
+  
+  // trigger cancelation of a specific scope (and all its children)
+  ctl cancel-scope( scope : scope-id ) : ()
+
+  final ctl discontinue(): a
+
+// A type alias for asynchronous operations which are both `ndet` and `div` (may never return).
+// This is common for almost all `:async` operations due to concurrency and cancelation.
 pub alias asyncx = <async,ndet,div>
 
 pub alias async-exn = <asyncx,exn>
@@ -109,27 +129,6 @@ alias maybe-dispose-fn = (maybe<() -> io-noexn ()>)
 
 // TODO does this need to be pub?
 pub alias await-setup<a> = (cb : (await-result<a>, bool) -> io-noexn ()) -> io-noexn maybe-dispose-fn
-
-// Asynchronous operations have the `:async` effect.
-// TODO: async should NOT imply all of io-noexn. We can
-// do that by moving the scheduler into an effect rather than an implicit
-pub effect async
-  val async-scope: scope
-
-  // setup a callback and await its completion
-  ctl do-await( setup : await-setup<a>, scope : scope) : await-result<a>
-  
-  // setup a callback to execute `f` on completion, returning control to the caller immediately
-  // after the setup is performed
-  ctl no-await( setup : await-setup<a>, scope : scope, f : await-result<a> -> io-noexn ()  ) : ()
-
-  // TODO: rename `async-eval` or similar?
-  ctl async-iox( action : () -> io-noexn a ) : a
-  
-  // trigger cancelation of a specific scope (and all its children)
-  ctl cancel-scope( scope : scope-id ) : ()
-
-  final ctl discontinue(): a
 
 // defers cancelation, but invokes a hook immediately for notification
 fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <st<global>,asyncx|e> a): <st<global>,asyncx|e> a
@@ -324,7 +323,7 @@ fun emit-io( ch : channel<a>, value : a ) : io-noexn ()
       l(value)
 
 // Emit a value asynchronously into a channel.
-pub fun emit( ch : channel<a>, value : a ) : asyncx ()
+pub fun emit( ch : channel<a>, value : a ) : <asyncx,st<global>> ()
   async-io-noexn
     emit-io(ch,value)
 
@@ -356,7 +355,7 @@ pub fun timeout( secs : duration, action : () -> <asyncx,io-noexn|e> a, ?set-tim
 
 // Execute `a` and `b` interleaved. As soon as one of them finishes,
 // `cancel` the other one and return the result of the first.
-pub fun firstof( a : () -> <asyncx,io-noexn|e> a, b : () -> <asyncx,io-noexn|e> a) : <asyncx,io-noexn|e> a
+pub fun firstof( a : () -> <asyncx|e> a, b : () -> <asyncx|e> a) : <asyncx|e> a
   fun runner(f)
     fn(scope)
       unsafe-println("[firstof] running in scope: " ++ async-scope.show)
@@ -376,7 +375,7 @@ pub fun firstof( a : () -> <asyncx,io-noexn|e> a, b : () -> <asyncx,io-noexn|e> 
   match first
     Just(x) -> x
     Nothing ->
-      println("No results returned from interleaved-raw, I must have been canceled")
+      unsafe-println("No results returned from interleaved-raw, I must have been canceled")
       discontinue()
 
 // // Wait (asynchronously) for `secs` seconds as a `:double`.
@@ -453,7 +452,7 @@ pub fun list/interleaved(xs : list<() -> <asyncx,io-noexn|e> a> ) : <asyncx,io-n
     unsafe-println("list/interleaved mapping over result: " ++ result.show)
     result.continue-await("list/interleaved")
 
-fun list/interleaved-raw(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn|e> list<await-result<a>>
+fun list/interleaved-raw(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx|e> list<await-result<a>>
   var state : some<a> interleaving<a> := Interleaving(xs.length, [])
   // TODO is it possible to have more than one finalizer, and some don't get run?
   with handler<strands<_>>
@@ -479,6 +478,7 @@ fun list/interleaved-raw(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx
       state := Interleaving(state.incomplete - 1, state.results.insert(idx,res))
       unsafe-println("[interleaved] strand " ++ idx.show ++ " done (" ++ res.show ++ ") state is now " ++ state.show)
 
+  with unsafe-pretend-stateless
   with mask<local>
   interleave-strands(xs)
 
@@ -538,10 +538,18 @@ pub fun unsafe-catch-cancel(a: () -> <async|e> a): <async|e> await-result<a>
     fun async-iox(x) async-iox(x)
     fun cancel-scope(scope) cancel-scope(scope)
 
+fun unsafe-pretend-stateless(a: () -> <st<global>|e> a): e a
+  unsafe-total(a)
+
+fun mask-global-state(a: () -> e a): <st<global>|e> a
+  with mask<read<global>>
+  with mask<write<global>>
+  with mask<alloc<global>>
+  a()
+
 // TODO is there a better way to inform the caller of scope than having every item in the list accept it?
-fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn,strands<a>|e> ()
+fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,st<global>,strands<a>|e> ()
   val inner-scope: ref<global,_> = ref(Nothing)
-  // var child-scope := Nothing
   val keep-spawning: ref<global,_> = ref(True)
   val ch : some<a,e> channel<() -> <async|e> a> = channel()
   
@@ -565,7 +573,7 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
     unsafe-println("[interleave-strands] created inner-scope " ++ cid.show)
     inner-scope.set(Just(cid))
     // child-scope := Just(interleave-scope)
-    val yield-on-await: some<e> (i: int, action: () -> <asyncx,io-noexn|e> ()) -> <asyncx,io-noexn|e> () = fn(i, action)
+    val yield-on-await: some<e> (i: int, action: () -> <async|e> ()) -> <async|e> () = fn(i, action)
       handle<async>({ mask behind<async>(action) })
         raw ctl do-await(setup,scope)
           // turn awaits into no-awaits, allowing other strands to execute
@@ -595,9 +603,7 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
         strand-done(i, Complete(Cancel))
       else
         with yield-on-await(i)
-
-        // val res = strand-exec(inject-effects(action))
-        val res: strand-result<_> = strand-exec(inject-effects { action(sentinel-scope) })
+        val res = mask-global-state { strand-exec(inject-effects { action(sentinel-scope) }) }
         strand-done(i, res)
         if res.is-finalize then
           keep-spawning := False
@@ -610,9 +616,9 @@ fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,i
   while { strands-are-busy() } // while there are resumptions on the strands..
     // the only way receive can abort is through a cancelation -- but in that case
     // we should not cancel but instead await all canceled strands
-    println("[interleave-strands] polling for next continuation")
+    unsafe-println("[interleave-strands] polling for next continuation")
     val strand-resume = ch.receive
-    println("[interleave-strands] resuming strand")
+    unsafe-println("[interleave-strands] resuming strand")
     strand-resume()
   unsafe-println("[interleave-strands] strands complete; returning ()")
   ()
@@ -798,12 +804,6 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
 
   action()
   ()
-
-// pub fun cancel/handle(action : () -> <cancel,io-noexn|e> a ) : <io-noexn|e> a
-//   handle(action)
-//     final ctl discontinue()
-//       println("ERROR: discontinue occurred at the toplevel scope, this should be impossible")
-//       exit(1)
 
 // // TODO what is this for?
 // fun io-noexn( f : () -> io-noexn a ) : io-noexn a

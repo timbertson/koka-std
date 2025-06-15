@@ -20,13 +20,13 @@ abstract struct timer (
 )
 
 // Sets a timeout for libuv / wasm / javscript / C# event loops
-pub extern set-timeout( cb : () -> io-noexn (), ms : int32 ) : io-noexn any
+pub extern set-timeout( cb : () -> <st<global>|e> (), ms : int32 ) : <st<global>|e> any
   cs "_Async.SetTimeout"
   js "setTimeout"
   c "kk_set_timeout"
 
 // Clears a timeout for libuv / wasm / javscript / C# event loops
-pub extern clear-timeout( tid : any) : io-noexn ()
+pub extern clear-timeout( tid : any) : st<global> ()
   cs "_Async.ClearTimeout"
   js "clearTimeout"
   c "kk_clear_timeout"
