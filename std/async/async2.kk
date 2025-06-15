@@ -157,9 +157,11 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <s
 
   val dangling-cb: ref<global,_> = ref(Nothing)
   with finally {
-    // ensure dangling-db gets invoked so we don't leak uninoked and uncancelled callbacks
+    // ensure dangling-db gets invoked so we don't leak uninvoked and uncancelled callbacks
     match !dangling-cb
-      Just(cb) -> async-iox { cb(Result(()), True) }
+      Just(cb) ->
+        unsafe-println("[unsafe-override-cancel] completing dangling CB in scope " ++ async-scope.show)
+        async-iox { cb(Result(()), True) }
       Nothing -> ()
   }
 
@@ -552,14 +554,14 @@ pub fun unsafe-catch-cancel(a: () -> <cancel|e> a): e await-result<a>
     return(x)
       Result(x)
 
-// TODO is there a better way to inform the caller of scope?
+// TODO is there a better way to inform the caller of scope than having every item in the list accept it?
 fun interleave-strands(xs : list<(scope) -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn,strands<a>|e> ()
   val inner-scope: ref<global,_> = ref(Nothing)
   // var child-scope := Nothing
   val keep-spawning: ref<global,_> = ref(True)
   val ch : some<a,e> channel<() -> <async|e> a> = channel()
   
-  // interleave has very explicit cancelation handling. When the scope
+  // interleave has custom cancelation handling. When the scope
   // is canceled, we don't discontinue() but instead
   // perform explicit cancelation of the child scope, and
   // let that flow through into registering all outstanding scopes
@@ -861,7 +863,7 @@ fun is-in-scope(child : scope, parent : scope-id ) : bool
 
 // every scope with the same ID must implicitly contain the same
 // parent chain, so a simple comparison on the head is sufficient
-fun scope/(==)(scope1 : scope, scope2 : scope ) : bool
+pub fun scope/(==)(scope1 : scope, scope2 : scope ) : bool
   match scope1
     Scope(ids1) -> match scope2
       Scope(ids2) -> maybe/(==)(ids1.head, ids2.head, ?(==) = int/(==))
@@ -876,12 +878,12 @@ fun lookup( xs : list<(scope,a)>, scope : scope ) : maybe<a>
 fun contains( xs : list<(scope,a)>, scope : scope ) : bool
   xs.lookup(scope).bool
 
-fun cscope/show( s : scope ) : string
+pub fun scope/show( s : scope ) : string
   match s
     Scope(ids) -> ids.map(show).join("<-") ++ "-"
 
 // TODO make private?
-pub fun cscope/cancel(s: scope)
+pub fun scope/cancel(s: scope)
   match s
     // TODO: this matches even an empty scope!
     // Scope(Cons(scope-id, _)) ->

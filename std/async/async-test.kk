@@ -26,43 +26,38 @@ fun listset/add(l: list<v>, v: v, ?(==): (v, v) -> bool): list<v>
 fun listset/remove(l: list<v>, v: v, ?(==): (v, v) -> bool): list<v>
   l.list/remove(fn(i) i == v)
 
-fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
-  println("-------->")
+fun real/noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   // NOTE: this doesn't handle multiple resumption
-  val pending: ref<global,list<int>> = ref([])
+  val pending: ref<global,list<(int, async2/scope)>> = ref([])
 
-  with finally
-    println("<-------- (pending=" ++ (!pending).show ++ ")")
-    if ! (!pending).is-empty then
-      throw("Test leaked async callbacks")
-  
-  fun wrap-setup(setup)
+  fun wrap-setup(setup, scope: async2/scope)
     val id = unique()
-    println("-> [" ++ id.show ++ "]")
+    val entry = (id, scope)
+    println("[track-leaks] -> [" ++ entry.show ++ "]")
 
-    pending := (!pending).add(id)
-    fun done(reason)
+    pending := (!pending).add(entry)
+    fun done(result, reason)
       unsafe-total
-        println("<- [" ++ id.show ++ ":" ++ reason ++ "]")
-      pending := (!pending).remove(id)
+        println("[track-leaks] <- [" ++ entry.show ++ ":" ++ reason ++ "] cancel=" ++ result.is-cancel.show)
+      pending := (!pending).remove(entry)
 
     fun wrapped-setup(cb)
       fun wrapped-cb(result, bool)
-        done("return")
+        done(result, "return")
         cb(result, bool)
 
-      match setup(wrapped-cb)
-        Nothing -> Just { done("nodispose") } // TODO should this be Nothing?
-        Just(dispose) -> Just { done("cancel"); dispose() }
+      setup(wrapped-cb)
+      // match setup(wrapped-cb)
+      //   Nothing -> Nothing
+      //   Just(dispose) -> Just { done(Cancel, "cancel"); dispose() }
     wrapped-setup
 
   with handler<async>
-    raw ctl do-await(setup,scope)
-      do-await(wrap-setup(setup), scope)
-      ()
+    ctl do-await(setup,scope)
+      resume(do-await(wrap-setup(setup, scope), scope))
 
     fun no-await(setup,scope,f)
-      no-await(wrap-setup(setup), scope, f)
+      no-await(wrap-setup(setup, scope), scope, f)
 
     fun async-iox(f)
       async-iox(f)
@@ -72,7 +67,12 @@ fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
 
     val async-scope = async-scope
 
-  mask behind<async>(action)
+  with mask behind<async>
+  with finally
+    if ! (!pending).is-empty then
+      println("[track-leaks] pending=" ++ (!pending).map(fst).show)
+      throw("Test leaked async callbacks")
+  action()
 
 effect audit<a>
   fun record(value: a): ()
@@ -94,24 +94,40 @@ fun error-message(err: error<_>): maybe<string>
     Error(ex) -> Just(ex.message)
     Ok(_) -> Nothing
 
+fun noleak-test(name, body, ?kk-module, ?kk-line)
+  // effectful-test("[vanilla] " ++ name, body) // rule out interference by noleaks itself
+  effectful-test(name) { noleaks(body) }
+
 fun main(): <io-noexn,async> ()
   with cancel/handle // TODO why isn't this added implicitly?
   run-tests
-    effectful-test("simple sleep")
-      // with noleaks
+    group("noleaks")
+      effectful-test("fails if a block leaks a callback")
+        val result = try
+          with noleaks
+          no-await(fn (cb) { Nothing }, async-scope, fn(_) {})
+        expect(Just("Test leaked async callbacks")) { result.error-message }
+
+      effectful-test("doesn't interfere with async execution")
+        val result = try
+          with noleaks
+          wait(short-pause)
+          throw("fail!")
+        expect(Just("fail!")) { result.error-message }
+        
+    noleak-test("simple sleep")
       expect(123)
         wait(short-pause)
         123
 
-    effectful-test("interleaved singleton")
-      // with noleaks
+    noleak-test("interleaved singleton")
       expect([1])
         fun action()
           wait(short-pause)
           1
         interleaved([action])
 
-    effectful-test("interleaved singleton which throws")
+    noleak-test("interleaved singleton which throws")
       with audit
       fun action()
         with finally
@@ -124,8 +140,7 @@ fun main(): <io-noexn,async> ()
 
       expect(["finally"]) { records() }
 
-    effectful-test("interleaved pair")
-      // with noleaks
+    noleak-test("interleaved pair")
       val pair =
         interleaved {
           wait(short-pause)
@@ -137,8 +152,7 @@ fun main(): <io-noexn,async> ()
       println("Interleaved: " ++ pair.show)
       expect((1,2)) { pair }
 
-    effectful-test("cancel the scope above an interleave")
-      // with noleaks
+    noleak-test("cancel the scope above an interleave")
       with audit
       val result = unsafe-catch-cancel
         with child-scope
@@ -157,7 +171,7 @@ fun main(): <io-noexn,async> ()
       expect(["finally"]) { records() }
       expect(True) { result.is-cancel }
 
-    effectful-test("firstof doesn't run more actions if the first is synchronous")
+    noleak-test("firstof doesn't run more actions if the first is synchronous")
       with audit
       val result = firstof {
         1
@@ -169,7 +183,7 @@ fun main(): <io-noexn,async> ()
       expect(result) { 1 }
       expect([]: list<string>) { records() }
 
-    effectful-test("firstof doesn't spawn further actions if the first raises synchronously")
+    noleak-test("firstof doesn't spawn further actions if the first raises synchronously")
       with audit
       val result = try
         firstof {
@@ -181,7 +195,7 @@ fun main(): <io-noexn,async> ()
       expect(Just("branch 1")) { result.error-message }
       expect([]: list<string>) { records() }
 
-    effectful-test("interleave doesn't spawn further actions if the first raises synchronously")
+    noleak-test("interleave doesn't spawn further actions if the first raises synchronously")
       with audit
       val result = try
         interleaved([{
@@ -193,8 +207,7 @@ fun main(): <io-noexn,async> ()
       expect(Just("branch 1")) { result.error-message }
       expect([]: list<string>) { records() }
 
-    effectful-test("interleave with finalization after exn")
-      // with noleaks
+    noleak-test("interleave with finalization after exn")
       with audit
       val result = try
         interleaved {
@@ -214,8 +227,7 @@ fun main(): <io-noexn,async> ()
       expect(Just("strand 1 failed")) { result.error-message }
 
 
-    effectful-test("firstof with finalization in slower branch")
-      // with noleaks
+    noleak-test("firstof with finalization in slower branch")
       with audit
       val result = firstof {
         wait(short-pause)
@@ -234,8 +246,7 @@ fun main(): <io-noexn,async> ()
       expect(1) { result }
       println("Yah!")
 
-    effectful-test("finalization can be async")
-      // with noleaks
+    noleak-test("finalization can be async")
       val log = ref([]: list<string>)
       fun long-running()
         fun cleanup()
@@ -258,7 +269,7 @@ fun main(): <io-noexn,async> ()
       val e = list/(==)(["a"], ["b"])
       expect(["start", "cancel", "cleanup", "result: short"], ?(==) = list/(==)) { !log }
 
-    effectful-test("cancellation and try")
+    noleak-test("cancellation and try")
       with audit
       fun interruptible()
         with finally { record("finally") }
@@ -278,7 +289,7 @@ fun main(): <io-noexn,async> ()
 
       expect(["start", "finally"], ?(==) = list/(==)) { records() }
 
-    effectful-test("error in cancelation is raised")
+    noleak-test("error in cancelation is raised")
       fun interruptible()
         with finally { throw("finalization exn") }
         wait(long-pause)
@@ -290,7 +301,7 @@ fun main(): <io-noexn,async> ()
           "success"
         } fn(e) { e.message }
 
-    effectful-test("exception in main code takes priority over error in cancelation")
+    noleak-test("exception in main code takes priority over error in cancelation")
       fun interruptible()
         with finally { throw("finalization exn") }
         wait(long-pause)
@@ -304,7 +315,7 @@ fun main(): <io-noexn,async> ()
           "success"
         } fn(e) { e.message }
 
-    effectful-test("defer-cancelation defers cancelation signal until block is complete")
+    noleak-test("defer-cancelation defers cancelation signal until block is complete")
       val log = ref([]: list<string>)
       fun interruptible()
         defer-cancelation
