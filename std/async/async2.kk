@@ -101,28 +101,20 @@ fun strand-result/show(s: strand-result<a>)
     Finalize(_) -> "Finalize(...)"
     Complete(_) -> "Complete(_)"
 
-fun continue-await(v: await-result<a>, desc: string): asyncx a
+fun continue-await(v: await-result<a>): asyncx a
   match v
     Result(value) -> value
-    Cancel ->
-      unsafe-println("[continue-await] " ++ desc ++ ": discontinue")
-      discontinue()
+    Cancel -> discontinue()
 
 fun continue-strand(v: strand-result<a>): total a
   match v
-    Complete(value) ->
-      unsafe-println("[continue-strand] value!")
-      value
-    Finalize(yield-info) ->
-      unsafe-println("[continue-strand] unsafe-reyield")
-      unsafe-reyield(yield-info)
+    Complete(value) -> value
+    Finalize(yield-info) -> unsafe-reyield(yield-info)
 
 fun finalize-strand(v: strand-result<a>): total ()
   match v
     Complete(_) -> ()
-    Finalize(yield-info) ->
-      unsafe-println("[finalize-strand] reyield")
-      unsafe-reyield(yield-info)
+    Finalize(yield-info) -> unsafe-reyield(yield-info)
 
 
 alias maybe-dispose-fn = (maybe<() -> io-noexn ()>)
@@ -132,17 +124,11 @@ pub alias await-setup<a> = (cb : (await-result<a>, bool) -> io-noexn ()) -> io-n
 
 // defers cancelation, but invokes a hook immediately for notification
 fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <asyncx|e> a): <asyncx|e> a
-  fun cancel-triggered(): io-noexn ()
-    unsafe-println("[unsafe-override-cancel]: cancel-triggered")
-    on-cancel-hook()
-
   val dangling-cb: ref<global,_> = ref(Nothing)
   with finally {
-    // ensure dangling-db gets invoked so we don't leak uninvoked and uncancelled callbacks
+    // ensure dangling-cb gets invoked so we don't leak uninvoked and uncancelled callbacks
     match !dangling-cb
-      Just(cb) ->
-        unsafe-println("[unsafe-override-cancel] completing dangling CB in scope " ++ async-scope.show)
-        async-iox { cb(Result(()), True) }
+      Just(cb) -> async-iox { cb(Result(()), True) }
       Nothing -> ()
   }
 
@@ -150,9 +136,8 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <a
   // to capture cancelation triggered from above.
   fun setup-cb(cb: ((await-result<()>, bool) -> io-noexn ())): io-noexn maybe-dispose-fn
     dangling-cb.set(Just(cb))
-    return Just(cancel-triggered) // cleanup fn
+    return Just(on-cancel-hook) // cleanup fn
   no-await(setup-cb, async-scope, fn(_) ())
-  unsafe-println("[unsafe-override-cancel]: canary installed in scope " ++ async-scope.show)
 
   // create a new scope root, so that any callbacks registered
   // underneath this scope will not be seen as children of
@@ -160,7 +145,6 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <a
   // scope is canceled)
   val cid = async-iox { unique() }
   val new-scope = empty-scope.child(cid)
-  unsafe-println("[unsafe-override-cancel]: new root scope: " ++ new-scope.show)
 
   with finally {
     cancel-scope(cid) // don't leave anything dangling in case of exn etc
@@ -176,9 +160,8 @@ fun unsafe-override-cancel(on-cancel-hook: () -> <io-noexn> (), action: () -> <a
     // cancelation triggered from within this scope, but only if it's
     // targeted at exactly this scope.
     fun cancel-scope(scope-id)
-      unsafe-println("[defer-cancelation-hook]: saw cancelation of scope " ++ scope-id.show ++ ", mine is " ++ cid.show)
       if scope-id == cid then
-        async-iox(cancel-triggered)
+        async-iox(on-cancel-hook)
       else
         // pass it along, it's presumably a child scope
         // nested under this uncancelable one
@@ -197,7 +180,6 @@ pub fun defer-cancelation(action: () -> <asyncx|e> a): <asyncx|e> a
   fun on-cancel()
     canceled := True
   val result = unsafe-override-cancel(on-cancel, action)
-  unsafe-println("[defer-cancelation-hook] after action, canceled = " ++ (!canceled).show)
   if !canceled then
     discontinue()
   result
@@ -301,7 +283,7 @@ fun receive( ch : channel<a>) : asyncx a
 
   match ch.try-receive
     Just(v) -> v
-    Nothing -> do-await(setup,async-scope).continue-await("channel.receive")
+    Nothing -> do-await(setup,async-scope).continue-await
 
 // Return immediately if a value is available on the channel and otherwise returns `Nothing`.
 pub fun try-receive( ch : channel<a> ) : <async,ndet> maybe<a>
@@ -358,11 +340,7 @@ pub fun timeout( secs : duration, action : () -> <asyncx,io-noexn|e> a, ?set-tim
 pub fun firstof( a : () -> <asyncx|e> a, b : () -> <asyncx|e> a) : <asyncx|e> a
   fun runner(f)
     fn(scope)
-      unsafe-println("[firstof] running in scope: " ++ async-scope.show)
-      with finally {
-        unsafe-println("[firstof] canceling scope in finally: " ++ async-scope.show)
-        scope.cancel()
-      } // cancel regardless of exn or result
+      with finally { scope.cancel() } // cancel regardless of exn or result
       mask<local> { f() }
 
   // note: when we cancel `scope`, interleaved-raw returns Cancel items,
@@ -374,9 +352,7 @@ pub fun firstof( a : () -> <asyncx|e> a, b : () -> <asyncx|e> a) : <asyncx|e> a
       Cancel -> Nothing
   match first
     Just(x) -> x
-    Nothing ->
-      unsafe-println("No results returned from interleaved-raw, I must have been canceled")
-      discontinue()
+    Nothing -> discontinue()
 
 // // Wait (asynchronously) for `secs` seconds as a `:double`.
 // // Use `yield()` to yield to other asynchronous operations.
@@ -440,29 +416,22 @@ fun interleaving/show(i: interleaving<_>)
 //   i.results.map(fn(pair) pair.snd.async-c
 //   "Interleaving(incomplete=" ++ i.incomplete.show ++ ", " ++ i.results.show ++ ")"
 
-pub fun unsafe-println(s: string)
-  unsafe-total { println(s) }
-
 pub fun list/interleaved(xs : list<() -> <asyncx,io-noexn|e> a> ) : <asyncx,io-noexn|e> list<a>
   fun runner(f)
     fn(_)
       f()
   xs.map(runner).interleaved-raw.map fn(result)
-    // TODO do we fail to finalize/cancel a strand if an ealier one raises an error?
-    unsafe-println("list/interleaved mapping over result: " ++ result.show)
-    result.continue-await("list/interleaved")
+    result.continue-await
 
 fun list/interleaved-raw(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx|e> list<await-result<a>>
   var state : some<a> interleaving<a> := Interleaving(xs.length, [])
   // TODO is it possible to have more than one finalizer, and some don't get run?
   with handler<strands<_>>
     finally()
-      unsafe-println("[interleaved] finally with state " ++ state.show)
       state.results.foreach fn(pair)
         pair.snd.finalize-strand
 
     return(_)
-      unsafe-println("[interleaved] returning with state " ++ state.show)
       // pretend finalized are cancels, since we're already returning await-result.
       // I don't think the stack actually continues if there's any finalizers, TODO check this
       state.results.map fn(pair)
@@ -471,12 +440,10 @@ fun list/interleaved-raw(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx|e> list<
           Complete(x) -> x
 
     fun strands-are-busy()
-      unsafe-println("[interleaved] strands-are-busy? with state " ++ state.show)
       state.incomplete > 0
 
     fun strand-done(idx,res)
       state := Interleaving(state.incomplete - 1, state.results.insert(idx,res))
-      unsafe-println("[interleaved] strand " ++ idx.show ++ " done (" ++ res.show ++ ") state is now " ++ state.show)
 
   // with unsafe-pretend-stateless
   with mask<local>
@@ -523,7 +490,6 @@ inline extern inject-effects : forall<a,h,e> (() -> e a) -> total (() -> <strand
 pub fun unsafe-catch-cancel(a: () -> <async|e> a): <async|e> await-result<a>
   handle({ mask behind<async>(a) })
     final ctl discontinue()
-      unsafe-println("[catch-cancel] caught, returning nothing")
       Cancel
     return(x)
       Result(x)
@@ -558,7 +524,6 @@ fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,strands<a>
   with unsafe-override-cancel {
     // Note we can't cancel() directly in this hook because cancel is async,
     // but we can add it to the queue of actions to run
-    unsafe-println("[interleave-strands] caught cancel; emitting explicit cancel-scope( " ++ (!inner-scope).map(fn(i: int) i).show ++ ") into channel")
     keep-spawning := False
     ch.emit-io
       (!inner-scope).foreach(cancel-scope)
@@ -567,23 +532,14 @@ fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,strands<a>
   val sentinel-scope = async-scope
 
   child-scope-without-auto-cancel fn(cid) // introduce a child scope which doesn't cancel-on-finalize
-    unsafe-println("[interleave-strands] created inner-scope " ++ cid.show)
     inner-scope.set(Just(cid))
-    // child-scope := Just(interleave-scope)
-    val yield-on-await: some<e> (i: int, action: () -> <async|e> ()) -> <async|e> () = fn(i, action)
-      handle<async>({ mask behind<async>(action) })
+    fun yield-on-await(action)
+      (handler<async> {
         raw ctl do-await(setup,scope)
           // turn awaits into no-awaits, allowing other strands to execute
           val unique-id = unsafe-total(unique)
-          unsafe-println("[interleave-strands][" ++ i.show ++ "]: deferring resumption in scope " ++ scope.show ++ " to channel -- uid[" ++ unique-id.show ++ "]")
-          
-          // TODO it looks like this doesn't always get called back?
           no-await(setup, scope) fn(res)
-            unsafe-println("[interleave-strands] enqueuing resume of uid[" ++ unique-id.show ++ "] with res " ++ res.show)
-            ch.emit-io({
-              unsafe-println("[interleave-strands] resuming rctx uid[" ++ unique-id.show ++ "] with res " ++ res.show)
-              rcontext.resume(res)
-            })
+            ch.emit-io({ rcontext.resume(res) })
           ()
 
         // passthrough others
@@ -592,14 +548,16 @@ fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,strands<a>
         fun async-iox(f) async-iox(f)
         fun cancel-scope(scope) cancel-scope(scope)
         fun discontinue() discontinue()
+      }) {
+        with mask behind<async>
+        action()
+      }
 
     xs.foreach-indexed fn(i, action)
-      unsafe-println("[interleave-strands] spawning strand " ++ i.show ++ " in scope " ++ async-scope.show)
       if !(!keep-spawning) then
-        unsafe-println("[interleave-strands] Skipping spawn of strand " ++ i.show)
         strand-done(i, Complete(Cancel))
       else
-        with yield-on-await(i)
+        with yield-on-await
         val res = strand-exec(inject-effects { action(sentinel-scope) })
         strand-done(i, res)
         if res.is-finalize then
@@ -607,17 +565,12 @@ fun interleave-strands(xs : list<(scope) -> <asyncx|e> a> ) : <asyncx,strands<a>
           cancel-scope(cid)
       ()
 
-  with finally
-    unsafe-println("[interleave-strands] finally around drain loop")
   // this runs outside of the `child-scope` (unaffected by `cancel-scope(cid)`)
   while { strands-are-busy() } // while there are resumptions on the strands..
     // the only way receive can abort is through a cancelation -- but in that case
     // we should not cancel but instead await all canceled strands
-    unsafe-println("[interleave-strands] polling for next continuation")
     val strand-resume = ch.receive
-    unsafe-println("[interleave-strands] resuming strand")
     strand-resume()
-  unsafe-println("[interleave-strands] strands complete; returning ()")
   ()
 
 // // ----------------------------------------------------------------------------
@@ -647,7 +600,7 @@ pub fun await0( setup : (cb : () -> io-noexn () ) -> io-noexn () ) : asyncx ()
   setup/await fn(cb)
     setup( fn() cb(Result(())) )
     Nothing
-  .continue-await("await0")
+  .continue-await
 
 // // Convenience function for awaiting a single argument callback.
 // pub fun await1( setup : (cb : (a) -> io-noexn () ) -> io-noexn () ) : asyncx a
@@ -663,12 +616,7 @@ pub fun await0( setup : (cb : () -> io-noexn () ) -> io-noexn () ) : asyncx ()
 // The callback should be invoked exactly once -- when that happens `await-exn` is resumed with the result.
 pub fun setup/await( setup : (cb : (a) -> io-noexn ()) -> io-noexn (maybe<() -> io-noexn ()>) ) : asyncx a
   val result = do-await(fn(cb) { setup(fn(res) cb(Result(res),True)) }, async-scope)
-  unsafe-println("@@ START")
-  finally {
-    unsafe-println("@@ END")
-  } {
-    result.continue-await("setup/await")
-  }
+  result.continue-await
 
 // // Primitive: Execute `setup` to set up an asynchronous callback with the host platform. Invoke `cb` as the callback: it takes either
 // // an exception or a result value, together with boolean parameter whether the callback is done.
@@ -711,7 +659,6 @@ pub fun child-scope( action : () -> <async|e> a ) : <async|e> a
     with finally
       // cancel any outstanding operations still in our scope.
       // this might be needed for `no-await` operations.
-      unsafe-println("[child-scope] cancel-self-scope: " ++ cid.show)
       cancel-scope(cid)
     action()
 
@@ -719,7 +666,6 @@ pub fun child-scope( action : () -> <async|e> a ) : <async|e> a
 // for canceling the created scope
 fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> a
   val cid = async-iox{ unique() }
-  unsafe-println("[child-scope] scope: " ++ cid.show)
   handle ({mask behind<async> { action(cid) }})
     val async-scope = async-scope.child(cid)
     fun do-await(setup,scope) do-await(setup,scope)
@@ -735,9 +681,6 @@ fun child-scope-without-auto-cancel(action : (int) -> <async|e> a ) : <async|e> 
 
 pub fun @default-async(action)
   async/handle(action)
-
-// pub fun @default-cancel(action)
-//   cancel/handle(action)
 
 fun noop(): ()
    ()
@@ -757,18 +700,14 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
 
     // TODO is there any code path where is-done is False?
     fun cb( res : await-result<_>, is-done : bool ): io-noexn ()
-      println("[async/handle] cb for cscope:" ++ cscope.show)
       fun cleanup()
         if is-done && ((!cancel-functions).contains(cscope)) then
           cancel-functions := (!cancel-functions).remove(cscope)
           if res.is-cancel then
-            println("[async/handle] Invoking cancel hook for scope " ++ cscope.show ++ " because res is cancel")
             (!cancel-hook)()
       cleanup()
-      println("[async/handle] _ACTUALLY_ cb for cscope:" ++ cscope.show)
       f(res)
 
-    trace("[async/handle] handle-await unique scope:" ++ cscope.show)
     val trigger-cancel: () -> io-noexn () = fn() cb(Cancel, True)
     cancel-functions := Cons((cscope, trigger-cancel), !cancel-functions)
     match(setup(cb))
@@ -777,11 +716,9 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
 
   fun handle-cancel( scope-id) : io-noexn ()
     // TODO what happens if we try to cancel more than once?
-    println("[async/handle] handle-cancel: " ++ scope-id.int/show)
     (!cancel-functions).foreach fn(entry)
       val (scope,trigger-cancel) = entry
       if (scope.is-in-scope(scope-id)) then
-        println("[async/handle] trigger cancel on scope  " ++ scope.show ++ " (in scope " ++ scope-id.show ++ ")")
         trigger-cancel()
 
   with handler<async>
@@ -793,8 +730,7 @@ pub fun async/handle(action : () -> <async,io-noexn> a ) : io-noexn ()
     fun cancel-scope(scope)
       handle-cancel(scope)
     final ctl discontinue()
-      println("ERROR: discontinue occurred at the toplevel scope, this should be impossible")
-      exit(1)
+      impossible("discontinue occurred at the toplevel scope")
 
     fun async-iox( f )
       f()
@@ -861,20 +797,14 @@ pub fun scope/cancel(s: scope)
     // Scope(Cons(scope-id, _)) ->
     Scope(ids) ->
       match ids
-        Cons(scope-id, _) ->
-          unsafe-println("canceling scope " ++ s.show)
-          cancel-scope(scope-id)
+        Cons(scope-id, _) -> cancel-scope(scope-id)
 
         // TODO: make it impossible by types to have an empty scope?
-        _ -> unsafe-println("WARN empty scope canceled?")
+        _ -> ()
 
 // execute an action, but observe whether it completed normally or
 // needs to instead run a finalizer (due to cancellation, exception, etc)
 fun strand-exec( action : () -> <async|e> a ): <async|e> strand-result<await-result<a>>
   match unsafe-try-finalize({ unsafe-catch-cancel(action) })
-    Left(fin) ->
-      unsafe-total { println("unsafe-try: finalize(fn)") }
-      Finalize(fin)
-    Right(v) ->
-      unsafe-total { println("unsafe-try: Complete(_)") }
-      Complete(v)
+    Left(fin) -> Finalize(fin)
+    Right(v) -> Complete(v)

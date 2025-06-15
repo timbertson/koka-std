@@ -32,7 +32,7 @@ fun noleaks(action: () -> <async,io|e> ()): <async,io|e> ()
   fun register(api, scope: async2/scope)
     val id = unique()
     val entry = (id, scope)
-    println("[track-leaks " ++ api ++ "] -> [" ++ entry.show ++ "]")
+    // println("[track-leaks " ++ api ++ "] -> [" ++ entry.show ++ "]")
 
     pending := (!pending).add(entry)
     fun done(result)
@@ -80,7 +80,7 @@ fun audit(action: () -> <audit<a>,expect,div,console|e> b, ?show: (a) -> div str
   handle(action)
     fun record(value)
       // TODO `hint` instead of println
-      println("record: " ++ value.show)
+      // println("record: " ++ value.show)
       log := log.push(value)
       ()
     fun records() -> log
