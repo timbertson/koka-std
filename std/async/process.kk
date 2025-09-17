@@ -86,6 +86,12 @@ pub fun exit/check-exit(exit: exit): exn ()
   if exit.failed then
     throw("Command failed (" ++ show(exit) ++ ")")
 
+pub fun exit/(==)(a: exit, b: exit): div bool
+  match (a,b)
+    (Exit-code(a), Exit-code(b)) -> a == b
+    (Exit-signal(a), Exit-signal(b)) -> a == b
+    _ -> False
+
 fun stdio-stream-of-output(output: child-output-stream, inherit-fd)
   match output
     Ignore-output -> Stream-ignore
@@ -136,6 +142,17 @@ fun finalize-process(p, strategy: kill-strategy)
     Nothing ->
       p.kill(strategy)
       ()
+
+pub fun only/run(
+  command: command,
+  // optional args
+  kill-strategy: kill-strategy = default
+  ): <io,async|e> ()
+  run(
+    command,
+    kill-strategy=kill-strategy,
+    action=fn(_) ()
+  )
 
 pub fun run(
   command: command,
